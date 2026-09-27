@@ -1,12 +1,12 @@
 # Fork deltas vs mainline opencode
 
-This fork (`neumark/opencode`) is the opencode build used inside [fc-opencode](https://github.com/immediately-run-worker/fc-opencode) Firecracker microVM development environments. It tracks mainline (`anomalyco/opencode`) `dev`: the fork's `dev` branch mirrors upstream, and the `web-ui-title` release branch is kept current by rebasing it onto `dev` (history up to `v1.18.31-neumark.6` used periodic dev merges instead; those release tags pin the pre-rebase commits and are never moved). The fork adds a small set of server, web UI, and shell features.
+This fork (`neumark/opencode`) is the opencode build used inside [fc-opencode](https://github.com/immediately-run-worker/fc-opencode) Firecracker microVM development environments. It tracks mainline (`anomalyco/opencode`) `dev`: the `main` branch is the single integration branch — upstream history plus every fork feature — and releases are tagged off it. (Until `v1.18.32-neumark.1` the workflow was a `dev` mirror branch plus a `web-ui-title` release branch rebased onto it, with periodic dev merges before `v1.18.31-neumark.7`; after `v1.18.32-neumark.1` both were consolidated into `main`, `dev` was deleted, and `web-ui-title` is retained as historical. Release tags pin their commits and are never moved.) The fork adds a small set of server, web UI, and shell features.
 
 Everything not listed here is stock mainline. In particular, the **experimental workspaces machinery is upstream code** (control-plane `Workspace` service, adapter runtime, `/experimental/workspace` routes, the `experimental_workspace` plugin API, workspace-aware v2 SDK client) — this fork does not modify it; it builds on it.
 
 ## Release lineage
 
-Releases are tagged `v<upstream-version>-neumark.<N>` off `web-ui-title` and published manually (no CI: upstream `publish.yml` is gated on `github.repository == 'anomalyco/opencode'`). Through `v1.18.31-neumark.6` each release shipped a single `opencode-linux-x64.tar.gz` asset; from `v1.18.31-neumark.7` releases ship both `opencode-linux-x64.tar.gz` and `opencode-linux-arm64.tar.gz` (arm64 cross-compiled by bun). Consumers walk the release list per-arch (fc-opencode's `pick_release_tag` picks the newest release actually shipping `opencode-linux-<arch>.tar.gz`).
+Releases are tagged `v<upstream-version>-neumark.<N>` off `main` (through `v1.18.32-neumark.1`, off `web-ui-title`) and published manually (no CI: upstream `publish.yml` is gated on `github.repository == 'anomalyco/opencode'`). Through `v1.18.31-neumark.6` each release shipped a single `opencode-linux-x64.tar.gz` asset; from `v1.18.31-neumark.7` releases ship both `opencode-linux-x64.tar.gz` and `opencode-linux-arm64.tar.gz` (arm64 cross-compiled by bun). Consumers walk the release list per-arch (fc-opencode's `pick_release_tag` picks the newest release actually shipping `opencode-linux-<arch>.tar.gz`).
 
 | Tag | Contents |
 | --- | --- |
@@ -19,6 +19,7 @@ Releases are tagged `v<upstream-version>-neumark.<N>` off `web-ui-title` and pub
 | `v1.18.31-neumark.6` | Workspace `extra.origin`: sessions belong to their origin directory (`2c0e29c`) |
 | `v1.18.31-neumark.7` | First release off the rebased (linear) history; first dual-arch release — adds `opencode-linux-arm64.tar.gz`; binary code identical to `.6` (delta is this doc + history shape) |
 | `v1.18.32-neumark.1` | Second rebase onto upstream `dev` (base `34aa4274`, upstream 1.18.32); no new fork features — binary delta is upstream changes only |
+| `v1.18.32-neumark.2` | Firecracker cgroup fence integration (`c73da62`, feature 5) — shell-tool OOM-kill annotation + fenced LSP leaves; first release off the consolidated `main`; x64 asset only (arm64 consumers fall back to `.1`) |
 
 Commit hashes above are the ones the tags pin (pre-rebase history); the equivalent post-rebase commits are `240eb50`, `a2a088a`, `97d3063`, `46a088c`, `d6c987c`, `5d3cb26`.
 
@@ -91,12 +92,12 @@ OPENCODE_VERSION=<x.y.z-neumark.N> bun script/build.ts --single   # linux-x64 on
 # → dist/opencode-linux-x64/{bin/opencode, package.json}; smoke test runs --version
 cd dist/opencode-linux-x64/bin && tar -czf /tmp/opencode-linux-x64.tar.gz *
 gh release create v<x.y.z-neumark.N> /tmp/opencode-linux-x64.tar.gz \
-  --repo neumark/opencode --target web-ui-title
+  --repo neumark/opencode --target main
 ```
 
 - The build embeds the web UI: `packages/app` is built with vite and every dist file is compiled into the binary as a generated path→file map (`opencode-web-ui.gen.ts`, served via `fs.readFile` from the bun-compiled asset store). UI-only changes therefore require a full binary rebuild and a new release.
 - The pre-push hook runs `bun typecheck` (turbo, whole monorepo) and a bun version check; `bun` must be on `PATH` when pushing.
-- Keep mainline current by pulling `origin/dev` and rebasing `web-ui-title` onto it (`git rebase <dev> web-ui-title`, then push with `--force-with-lease`). Release tags pin released binaries and are never moved by rebases.
+- Keep mainline current by fetching upstream (`anomalyco/opencode`) `dev` and rebasing `main` onto it (`git rebase <upstream-dev> main`, then push with `--force-with-lease`). Release tags pin released binaries and are never moved by rebases.
 
 ## Deployment contract (fc-opencode)
 
