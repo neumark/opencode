@@ -6,6 +6,7 @@ import path from "path"
 import { containsPath, type InstanceContext } from "../project/instance-context"
 import { InstanceState } from "@/effect/instance-state"
 import { lazy } from "@/util/lazy"
+import { Cgroup } from "@/util/cgroup"
 import { Language, type Node } from "web-tree-sitter"
 
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -86,6 +87,18 @@ const resolveWasm = (asset: string) => {
   if (asset.startsWith("/") || /^[a-z]:/i.test(asset)) return asset
   const url = new URL(asset, import.meta.url)
   return fileURLToPath(url)
+}
+
+// The spawner reports a signal death of the child as a failed exitCode: a
+// PlatformError whose cause message carries the signal name.
+const signalOf = (err: unknown): string => {
+  const causes = [err, err instanceof Error ? err.cause : undefined]
+  for (const cause of causes) {
+    if (!(cause instanceof Error)) continue
+    const match = /receipt of signal: '([^']+)'/.exec(cause.message)
+    if (match) return match[1]
+  }
+  return "unknown"
 }
 
 function parts(node: Node) {
@@ -455,6 +468,8 @@ export const ShellTool = Tool.define(
       let cut = false
       let expired = false
       let aborted = false
+      let killed: string | null = null
+      let pid = 0
 
       const closeSink = Effect.fnUntraced(function* () {
         const stream = sink
@@ -491,6 +506,7 @@ export const ShellTool = Tool.define(
         Effect.gen(function* () {
           yield* Effect.addFinalizer(closeSink)
           const handle = yield* spawner.spawn(cmd(input.shell, input.command, input.cwd, input.env))
+          pid = Number(handle.pid)
 
           yield* Effect.forkScoped(
             Stream.runForEach(Stream.decodeText(handle.all), (chunk) => {
@@ -549,7 +565,13 @@ export const ShellTool = Tool.define(
           const timeout = Effect.sleep(`${input.timeout + 100} millis`)
 
           const exit = yield* Effect.raceAll([
-            handle.exitCode.pipe(Effect.map((code) => ({ kind: "exit" as const, code }))),
+            handle.exitCode.pipe(
+              Effect.map((code) => ({ kind: "exit" as const, code, signal: null as string | null })),
+              // A signal death (e.g. a cgroup OOM kill) fails exitCode; surface it
+              // as an exit result instead of letting the whole call die, so the
+              // meta annotation below can tell the model what happened.
+              Effect.catch((err) => Effect.succeed({ kind: "exit" as const, code: null, signal: signalOf(err) })),
+            ),
             abort.pipe(Effect.map(() => ({ kind: "abort" as const, code: null }))),
             timeout.pipe(Effect.map(() => ({ kind: "timeout" as const, code: null }))),
           ])
@@ -562,6 +584,7 @@ export const ShellTool = Tool.define(
             expired = true
             yield* handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.orDie)
           }
+          if (exit.kind === "exit" && exit.code === null && exit.signal) killed = exit.signal
 
           return exit.kind === "exit" ? exit.code : null
         }),
@@ -574,6 +597,19 @@ export const ShellTool = Tool.define(
         )
       }
       if (aborted) meta.push("User aborted the command")
+      if (killed || code === 137) {
+        if (pid && Cgroup.oomKilled(pid)) {
+          meta.push(
+            "Command was killed by the sandbox memory fence (cgroup OOM): its process tree hit the per-command memory limit and every process in it was killed. This is a deterministic guardrail, not a flake — retrying the same command unchanged will just be killed again. Reduce memory usage first: lower concurrency (e.g. jest --maxWorkers=1 or --runInBand), split the work into smaller commands, or stop memory-hungry watchers.",
+          )
+        } else if (killed) {
+          meta.push(
+            killed === "unknown"
+              ? "Command was terminated by a signal before completing (an external kill, not this tool's timeout or a user abort)."
+              : `Command was terminated by signal ${killed} before completing (an external kill, not this tool's timeout or a user abort).`,
+          )
+        }
+      }
       const raw = list.map((item) => item.text).join("")
       const end = tail(raw, limits.maxLines, limits.maxBytes)
       if (end.cut) cut = true
