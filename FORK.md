@@ -6,7 +6,7 @@ Everything not listed here is stock mainline. In particular, the **experimental 
 
 ## Release lineage
 
-Releases are tagged `v<upstream-version>-neumark.<N>` off `main` (through `v1.18.32-neumark.1`, off `web-ui-title`) and published manually (no CI: upstream `publish.yml` is gated on `github.repository == 'anomalyco/opencode'`). Through `v1.18.31-neumark.6` each release shipped a single `opencode-linux-x64.tar.gz` asset; from `v1.18.31-neumark.7` releases ship both `opencode-linux-x64.tar.gz` and `opencode-linux-arm64.tar.gz` (arm64 cross-compiled by bun). Consumers walk the release list per-arch (fc-opencode's `pick_release_tag` picks the newest release actually shipping `opencode-linux-<arch>.tar.gz`).
+Releases are tagged `v<upstream-version>-neumark.<N>` off `main` (through `v1.18.32-neumark.1`, off `web-ui-title`) and published manually (no CI: upstream `publish.yml` is gated on `github.repository == 'anomalyco/opencode'`). Through `v1.18.31-neumark.6` each release shipped a single `opencode-linux-x64.tar.gz` asset; `v1.18.31-neumark.7` through `v1.18.32-neumark.1` shipped both `opencode-linux-x64.tar.gz` and `opencode-linux-arm64.tar.gz` (arm64 cross-compiled by bun); from `v1.18.33-neumark.1` releases ship `opencode-linux-x64.tar.gz` only (operator decision — the deployment hosts are x64). Consumers walk the release list per-arch (fc-opencode's `pick_release_tag` picks the newest release actually shipping `opencode-linux-<arch>.tar.gz`).
 
 | Tag | Contents |
 | --- | --- |
@@ -20,6 +20,7 @@ Releases are tagged `v<upstream-version>-neumark.<N>` off `main` (through `v1.18
 | `v1.18.31-neumark.7` | First release off the rebased (linear) history; first dual-arch release — adds `opencode-linux-arm64.tar.gz`; binary code identical to `.6` (delta is this doc + history shape) |
 | `v1.18.32-neumark.1` | Second rebase onto upstream `dev` (base `34aa4274`, upstream 1.18.32); no new fork features — binary delta is upstream changes only |
 | `v1.18.32-neumark.2` | Firecracker cgroup fence integration (`c73da62`, feature 5) — shell-tool OOM-kill annotation + fenced LSP leaves; first release off the consolidated `main`; x64 asset only (arm64 consumers fall back to `.1`) |
+| `v1.18.33-neumark.1` | Third rebase onto upstream `dev` (base `2fa3363c`, upstream 1.18.33) + sync history aggregate-scoped index reads (feature 6 — the 84MB/s event-table read spiral fix, upstream issue #52270); x64-only releases from here |
 
 Commit hashes above are the ones the tags pin (pre-rebase history); the equivalent post-rebase commits are `240eb50`, `a2a088a`, `97d3063`, `46a088c`, `d6c987c`, `5d3cb26`.
 
