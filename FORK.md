@@ -91,6 +91,42 @@ Commit hashes above are the ones the tags pin (pre-rebase history); the equivale
 
 **Implementation**: `packages/opencode/src/server/routes/instance/httpapi/handlers/sync.ts` — enumerate aggregates from `event_sequence` (one row per aggregate; a superset of `event`'s aggregates by FK — `selectDistinct` over `event` itself would still be a full covering-index scan per poll), then one indexed range scan per aggregate (`aggregate_id = ?` [+ `seq > watermark`]), union and sort by seq in memory: cost scales with the response, not the table; a fully-watermarked aggregate reads zero rows. Row-set semantics match the old shape on a static table; within an aggregate `seq` is unique so per-aggregate order is exactly preserved (cross-aggregate tie order was unspecified before and stays unspecified); the N+1 statements are not one snapshot — aggregates created after the enumeration are caught by the next poll, benign for a watermark catch-up protocol. Large aggregates are appended with loop-push (spread-push blows the JS stack above ~500-700k events). Reviewed by an independent Qwen3.8-Max agent pass (semantics parity verified with EXPLAIN QUERY PLAN against a scratch schema; measured 413ms → ~40ms on 200k rows). Tests: `packages/opencode/test/server/httpapi-sync.test.ts` (watermark skips a caught-up aggregate, unknown aggregates keep full history, mid-watermarks return only newer events, ghost-aggregate watermarks ignored, watermark 0 valid, global seq ordering).
 
+### 7. Fence-kill circuit breaker (shell tool)
+
+**What it does**: after N fence-killed command trees in a session (within a
+window), further shell commands in that session are **refused** —
+deterministically, as a normal tool result the model can read — for a
+cooldown, then one half-open probe is allowed (a clean exit resets the
+breaker, a fence kill re-trips it instantly).
+
+**Why it was needed**: the fences kill runaway command trees deterministically,
+but nothing stopped the agent from *retrying the same ballooning command
+forever* — measured live as a **55-oom_kill retry cycle** (one roadmap
+workflow session): each climb wedged the VM in reclaim churn (PSI memory
+60-90% bursts) while the killed run's output grew the transcript, and with it
+the per-step context re-assembly (the read-amplification spiral), so every
+retry was more expensive than the last. The advisory annotation alone
+demonstrably does not stop the cycle (55 kills despite "retry with lower
+concurrency"); the breaker makes refusal deterministic. A refusal is also
+~200 bytes instead of a multi-MB killed-run output — it stops the transcript
+bloat at the source.
+
+**Implementation**: `packages/opencode/src/util/fence-breaker.ts` — per-session
+in-memory state machine (closed → open at N windowed kills → half-open after
+the cooldown: exactly one probe; `recordSuccess` on a clean probe resets,
+`recordKill` re-trips). `packages/opencode/src/tool/shell.ts` — pre-spawn gate
+refusing while open (a normal tool result, never a defect), the annotation now
+carries the count ("fence-kill #N of this session (the breaker opens at K)"),
+and `recordSuccess` concludes the probe. Knobs:
+`OPENCODE_FENCE_BREAKER="N,windowSeconds,cooldownSeconds"` (defaults
+`"3,3600,600"`); `"0"`/`"off"` disables the refusal (counting continues).
+Inert outside fc-opencode guests (kills are only recorded where the cgroup
+fences exist). Verified end-to-end on a live guest: balloon command ×3
+(counted annotations, breaker trips) → 4th attempt refused pre-spawn with
+no process ever started. Tests: `packages/opencode/test/util/fence-breaker.test.ts`
+(state machine: trip, cooldown, half-open probe reset/re-trip, window decay,
+per-session isolation, settings parse, disable switches).
+
 ## Build and release process
 
 ```sh
