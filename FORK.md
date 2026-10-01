@@ -21,6 +21,7 @@ Releases are tagged `v<upstream-version>-neumark.<N>` off `main` (through `v1.18
 | `v1.18.32-neumark.1` | Second rebase onto upstream `dev` (base `34aa4274`, upstream 1.18.32); no new fork features — binary delta is upstream changes only |
 | `v1.18.32-neumark.2` | Firecracker cgroup fence integration (`c73da62`, feature 5) — shell-tool OOM-kill annotation + fenced LSP leaves; first release off the consolidated `main`; x64 asset only (arm64 consumers fall back to `.1`) |
 | `v1.18.33-neumark.1` | Third rebase onto upstream `dev` (base `2fa3363c`, upstream 1.18.33) + sync history aggregate-scoped index reads (feature 6 — the 84MB/s event-table read spiral fix, upstream issue #52270); x64-only releases from here |
+| `v1.18.33-neumark.2` | Fence-kill circuit breaker (feature 7 — `45dfb2b` + `318f171` hardening): shell commands in a session are refused after N windowed fence-killed command trees, half-open cooldown probe (`OPENCODE_FENCE_BREAKER`); pairs with the fc-opencode guest-side cwd-attributed breaker (`9d6a0aa` + `6971dba`), which catches cross-session retries through a shared cwd |
 
 Commit hashes above are the ones the tags pin (pre-rebase history); the equivalent post-rebase commits are `240eb50`, `a2a088a`, `97d3063`, `46a088c`, `d6c987c`, `5d3cb26`.
 
