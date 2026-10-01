@@ -112,20 +112,34 @@ concurrency"); the breaker makes refusal deterministic. A refusal is also
 bloat at the source.
 
 **Implementation**: `packages/opencode/src/util/fence-breaker.ts` — per-session
-in-memory state machine (closed → open at N windowed kills → half-open after
-the cooldown: exactly one probe; `recordSuccess` on a clean probe resets,
-`recordKill` re-trips). `packages/opencode/src/tool/shell.ts` — pre-spawn gate
-refusing while open (a normal tool result, never a defect), the annotation now
-carries the count ("fence-kill #N of this session (the breaker opens at K)"),
-and `recordSuccess` concludes the probe. Knobs:
+in-memory state machine. Closed: kills are counted with window decay and a
+clean completion does **not** clear them (the real-world cycle interleaves
+cheap clean commands — ls/cat/tail — between balloon attempts; only window
+decay or a concluded probe clears history). Open at N windowed kills: shell
+execution is refused for the cooldown (a kill recorded while open re-arms
+it). Half-open after the cooldown: a single in-flight probe **claim**
+(concurrent commands get a short refusal); a clean exit — neither a fence
+kill, a tool timeout, nor a user abort — concludes the claim and resets; a
+fence kill re-trips **unconditionally** (the cooldown elapsed but the
+workload still balloons — window arithmetic does not get a vote). The gate
+runs before the permission ask (a refusal never executes, so it must not
+prompt) and the trip annotation keys off actual refusal state (honest when
+refusal is disabled). Detection is fail-open by design (a kill masked by the
+tool's timeout/abort race or an unattributed exit-137 undercounts). Knobs:
 `OPENCODE_FENCE_BREAKER="N,windowSeconds,cooldownSeconds"` (defaults
-`"3,3600,600"`); `"0"`/`"off"` disables the refusal (counting continues).
-Inert outside fc-opencode guests (kills are only recorded where the cgroup
-fences exist). Verified end-to-end on a live guest: balloon command ×3
+`"3,3600,600"`); `"0"`/`"off"` disables the refusal (counting continues);
+garbage values log once and fail **safe** to the defaults. Inert outside
+fc-opencode guests. Verified end-to-end on a live guest: balloon command ×3
 (counted annotations, breaker trips) → 4th attempt refused pre-spawn with
-no process ever started. Tests: `packages/opencode/test/util/fence-breaker.test.ts`
-(state machine: trip, cooldown, half-open probe reset/re-trip, window decay,
-per-session isolation, settings parse, disable switches).
+no process ever started. Independently reviewed (Qwen3.8-Max agent pass,
+verdict request-changes → findings fixed: phantom probe claims erasing
+sub-threshold history, gate-after-permissions, disabled-mode annotation lie,
+concurrent probe claims, window-decay re-trip, timeout/abort reset, garbage
+fail-open). Tests: `packages/opencode/test/util/fence-breaker.test.ts` (15:
+state machine incl. clean-command interleaving regression, kill-during-
+cooldown re-arm, exclusive probe claim, decay re-trip, window decay, stale
+entry hygiene, settings parse incl. partial + garbage fail-safe, disable
+switches, per-session isolation).
 
 ## Build and release process
 

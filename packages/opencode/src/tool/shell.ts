@@ -601,9 +601,9 @@ export const ShellTool = Tool.define(
       if (killed || code === 137) {
         if (pid && Cgroup.oomKilled(pid)) {
           const killCount = FenceBreaker.recordKill(ctx.sessionID)
-          const opensAtKills = FenceBreaker.refusing(ctx.sessionID).opensAtKills
+          const tripped = FenceBreaker.refusing(ctx.sessionID).refused
           meta.push(
-            `Command was killed by the sandbox memory fence (cgroup OOM): its process tree hit the per-command memory limit and every process in it was killed. This is a deterministic guardrail, not a flake — retrying the same command unchanged will just be killed again. Reduce memory usage first: lower concurrency (e.g. jest --maxWorkers=1 or --runInBand), split the work into smaller commands, or stop memory-hungry watchers. Fence-kill #${killCount} of this session${killCount >= opensAtKills ? " — the session's shell circuit breaker is now OPEN: further shell commands will be refused for a cooldown; switch to a different task and come back to this one later" : ` (the breaker opens at ${opensAtKills})`}.`,
+            `Command was killed by the sandbox memory fence (cgroup OOM): its process tree hit the per-command memory limit and every process in it was killed. This is a deterministic guardrail, not a flake — retrying the same command unchanged will just be killed again. Reduce memory usage first: lower concurrency (e.g. jest --maxWorkers=1 or --runInBand), split the work into smaller commands, or stop memory-hungry watchers. Fence-kill #${killCount} of this session${tripped ? " — the session's shell circuit breaker is now OPEN: further shell commands will be refused for a cooldown; switch to a different task and come back to this one later" : " (windowed count; kills age out of the window)"}.`,
           )
         } else if (killed) {
           meta.push(
@@ -630,9 +630,11 @@ export const ShellTool = Tool.define(
       if (meta.length > 0) {
         output += "\n\n<shell_metadata>\n" + meta.join("\n") + "\n</shell_metadata>"
       }
-      // completed without a fence kill: conclude the half-open probe (a clean
-      // exit through the breaker's one allowed attempt resets it entirely)
-      if (!killed && code !== 137) FenceBreaker.recordSuccess(ctx.sessionID)
+      // completed without a fence kill AND without the tool's own timeout or
+      // a user abort (those conclude nothing — an aborted probe must not
+      // reset the breaker): conclude the half-open claim (a clean exit
+      // through the breaker's allowed attempt resets it entirely)
+      if (!killed && code !== 137 && !expired && !aborted) FenceBreaker.recordSuccess(ctx.sessionID)
       return {
         title: input.command,
         metadata: {
@@ -668,22 +670,14 @@ export const ShellTool = Tool.define(
               }
               const timeout = params.timeout ?? defaultTimeoutMs
               const ps = Shell.ps(shell)
-              yield* Effect.scoped(
-                Effect.gen(function* () {
-                  const tree = yield* Effect.acquireRelease(parse(params.command, ps), (tree) =>
-                    Effect.sync(() => tree.delete()),
-                  )
-                  const scan = yield* collect(tree.rootNode, cwd, ps, shell, instanceCtx)
-                  if (!containsPath(cwd, instanceCtx)) scan.dirs.add(cwd)
-                  yield* ask(ctx, scan, params)
-                }),
-              )
-
               // fence-kill circuit breaker: refuse execution while the
               // session's breaker is open (N fence-killed command trees
               // within the window) — a normal tool result, so the model can
               // read it and switch strategy instead of re-climbing into the
-              // fence (measured: a 55-oom_kill retry cycle wedging the VM)
+              // fence (measured: a 55-oom_kill retry cycle wedging the VM).
+              // Runs BEFORE the permission ask: a refusal never executes, so
+              // it must not prompt the user (or record an "always allow"
+              // decision) for a command that will never run.
               const breaker = FenceBreaker.gate(ctx.sessionID)
               if (breaker.refused) {
                 return {
@@ -694,12 +688,22 @@ export const ShellTool = Tool.define(
                     truncated: false,
                   },
                   output:
-                    `Command not executed: this session's shell circuit breaker is open — ${breaker.kills} command trees were killed by the sandbox memory fence within the breaker window, and verbatim retries only wedge the machine. Shell commands in this session are refused for ${Math.ceil(breaker.retryInMs / 1000)}s.` +
+                    `Command not executed: this session's shell circuit breaker is open — its kill threshold (${breaker.opensAtKills} windowed fence kills) was reached, and verbatim retries only wedge the machine. Shell commands in this session are refused for ${Math.ceil(breaker.retryInMs / 1000)}s.` +
                     "\n\n<shell_metadata>\n" +
                     "This refusal is deterministic, not a resource error: do NOT wait and retry the same command. Change strategy: cap the memory footprint of the failing command (e.g. NODE_OPTIONS=--max-old-space-size=1024, jest --maxWorkers=1), split the work into smaller commands, or move on to a different task and return to this one after the cooldown.\n" +
                     "</shell_metadata>",
                 }
               }
+              yield* Effect.scoped(
+                Effect.gen(function* () {
+                  const tree = yield* Effect.acquireRelease(parse(params.command, ps), (tree) =>
+                    Effect.sync(() => tree.delete()),
+                  )
+                  const scan = yield* collect(tree.rootNode, cwd, ps, shell, instanceCtx)
+                  if (!containsPath(cwd, instanceCtx)) scan.dirs.add(cwd)
+                  yield* ask(ctx, scan, params)
+                }),
+              )
 
               return yield* run(
                 {
