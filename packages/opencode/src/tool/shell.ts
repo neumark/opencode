@@ -7,6 +7,7 @@ import { containsPath, type InstanceContext } from "../project/instance-context"
 import { InstanceState } from "@/effect/instance-state"
 import { lazy } from "@/util/lazy"
 import { Cgroup } from "@/util/cgroup"
+import { FenceBreaker } from "@/util/fence-breaker"
 import { Language, type Node } from "web-tree-sitter"
 
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -599,8 +600,10 @@ export const ShellTool = Tool.define(
       if (aborted) meta.push("User aborted the command")
       if (killed || code === 137) {
         if (pid && Cgroup.oomKilled(pid)) {
+          const killCount = FenceBreaker.recordKill(ctx.sessionID)
+          const opensAtKills = FenceBreaker.refusing(ctx.sessionID).opensAtKills
           meta.push(
-            "Command was killed by the sandbox memory fence (cgroup OOM): its process tree hit the per-command memory limit and every process in it was killed. This is a deterministic guardrail, not a flake — retrying the same command unchanged will just be killed again. Reduce memory usage first: lower concurrency (e.g. jest --maxWorkers=1 or --runInBand), split the work into smaller commands, or stop memory-hungry watchers.",
+            `Command was killed by the sandbox memory fence (cgroup OOM): its process tree hit the per-command memory limit and every process in it was killed. This is a deterministic guardrail, not a flake — retrying the same command unchanged will just be killed again. Reduce memory usage first: lower concurrency (e.g. jest --maxWorkers=1 or --runInBand), split the work into smaller commands, or stop memory-hungry watchers. Fence-kill #${killCount} of this session${killCount >= opensAtKills ? " — the session's shell circuit breaker is now OPEN: further shell commands will be refused for a cooldown; switch to a different task and come back to this one later" : ` (the breaker opens at ${opensAtKills})`}.`,
           )
         } else if (killed) {
           meta.push(
@@ -627,6 +630,9 @@ export const ShellTool = Tool.define(
       if (meta.length > 0) {
         output += "\n\n<shell_metadata>\n" + meta.join("\n") + "\n</shell_metadata>"
       }
+      // completed without a fence kill: conclude the half-open probe (a clean
+      // exit through the breaker's one allowed attempt resets it entirely)
+      if (!killed && code !== 137) FenceBreaker.recordSuccess(ctx.sessionID)
       return {
         title: input.command,
         metadata: {
@@ -672,6 +678,28 @@ export const ShellTool = Tool.define(
                   yield* ask(ctx, scan, params)
                 }),
               )
+
+              // fence-kill circuit breaker: refuse execution while the
+              // session's breaker is open (N fence-killed command trees
+              // within the window) — a normal tool result, so the model can
+              // read it and switch strategy instead of re-climbing into the
+              // fence (measured: a 55-oom_kill retry cycle wedging the VM)
+              const breaker = FenceBreaker.gate(ctx.sessionID)
+              if (breaker.refused) {
+                return {
+                  title: params.command,
+                  metadata: {
+                    output: "",
+                    exit: null,
+                    truncated: false,
+                  },
+                  output:
+                    `Command not executed: this session's shell circuit breaker is open — ${breaker.kills} command trees were killed by the sandbox memory fence within the breaker window, and verbatim retries only wedge the machine. Shell commands in this session are refused for ${Math.ceil(breaker.retryInMs / 1000)}s.` +
+                    "\n\n<shell_metadata>\n" +
+                    "This refusal is deterministic, not a resource error: do NOT wait and retry the same command. Change strategy: cap the memory footprint of the failing command (e.g. NODE_OPTIONS=--max-old-space-size=1024, jest --maxWorkers=1), split the work into smaller commands, or move on to a different task and return to this one after the cooldown.\n" +
+                    "</shell_metadata>",
+                }
+              }
 
               return yield* run(
                 {
