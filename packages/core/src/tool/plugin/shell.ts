@@ -19,6 +19,7 @@ import { shellParserWasm } from "#shell-parser-wasm"
 import { ShellParse } from "../../shell/parse.js"
 import { ShellSelect } from "../../shell/select.js"
 import { ShellResult } from "../../shell/result.js"
+import { FenceBreaker } from "../../util/fence-breaker.js"
 
 export const name = "shell"
 export const DEFAULT_TIMEOUT_MS = 2 * 60 * 1_000
@@ -199,6 +200,12 @@ export const Plugin = {
           execute: (input, context) =>
             Effect.gen(function* () {
               const timeout = input.background === true ? (input.timeout ?? 0) : (input.timeout ?? DEFAULT_TIMEOUT_MS)
+              // Fence-kill circuit breaker: while the session's breaker is open, refuse as
+              // a readable tool result — before create's permission ask can prompt. This is
+              // the pure read; Shell.create's gate owns the half-open probe claiming.
+              const breaker = FenceBreaker.refusing(context.sessionID)
+              if (breaker.refused)
+                return { output: FenceBreaker.refusalMessage(breaker), truncated: false }
               let finalTimeout = timeout
               const info = yield* shell.create(
                 {

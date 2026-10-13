@@ -22,9 +22,20 @@ import { SessionSchema } from "./session/schema.js"
 import { Config } from "./config.js"
 import { ToolOutput } from "./tool-output.js"
 import { ShellResult } from "./shell/result.js"
+import { Cgroup } from "./util/cgroup.js"
+import { FenceBreaker } from "./util/fence-breaker.js"
 
 export class NotFoundError extends Schema.TaggedError<NotFoundError>()("Shell.NotFoundError", {
   id: Shell.ID,
+}) {}
+
+// The session's fence-kill circuit breaker is open (fc-opencode guests): shell
+// execution refused for the cooldown. Rendered by the shell tool as a normal
+// tool result the model can read and act on, never a defect.
+export class BreakerOpenError extends Schema.TaggedError<BreakerOpenError>()("Shell.BreakerOpenError", {
+  kills: Schema.Number,
+  opensAtKills: Schema.Number,
+  retryInMs: Schema.Number,
 }) {}
 
 // Keep recent exited processes observable in memory, including their file-backed output.
@@ -70,7 +81,7 @@ export interface Interface {
   readonly create: <E = never, R = never>(
     input: CreateInput,
     before?: (input: ShellCreateBefore) => Effect.Effect<void, E, R>,
-  ) => Effect.Effect<Shell.Info, E | AppProcess.AppProcessError, R>
+  ) => Effect.Effect<Shell.Info, E | AppProcess.AppProcessError | BreakerOpenError, R>
   // Currently running commands only; exited shells are retained for get/output but excluded here.
   readonly list: () => Effect.Effect<Shell.Info[]>
   readonly get: (id: Shell.ID) => Effect.Effect<Shell.Info, NotFoundError>
@@ -256,7 +267,7 @@ const layer = () =>
           const notice = truncated
             ? `\n\n[showing lines ${total - shown + 1}-${total} of ${total}; full output saved to ${info.file}]`
             : ""
-          return { output: `${text || "(no output)"}${notice}`, truncated }
+          return { output: `${text || "(no output)"}${notice}${fenceOutcome(info)}`, truncated }
         }).pipe(Effect.catchTag("Shell.NotFoundError", () => Effect.succeed(undefined)))
         return { info, capture }
       })
@@ -266,6 +277,13 @@ const layer = () =>
         before?: (input: ShellCreateBefore) => Effect.Effect<void, E, R>,
       ) {
         const sessionID = input.metadata?.sessionID
+        // Fence-kill circuit breaker (fc-opencode guests): refuse before the plugin
+        // hooks and the permission ask run — a refused command must never prompt the
+        // user or record an "always allow" decision for a command that will not run.
+        if (Schema.is(SessionSchema.ID)(sessionID)) {
+          const breaker = FenceBreaker.gate(sessionID)
+          if (breaker.refused) return yield* new BreakerOpenError(breaker)
+        }
         const baseEnv =
           location.workspaceID !== undefined
             ? undefined
@@ -308,13 +326,28 @@ const layer = () =>
             Effect.gen(function* () {
               const handle = yield* environment.spawner
                 .spawn(
-                  ChildProcess.make(invocation.shell, args, {
-                    cwd: invocation.cwd,
-                    env: invocation.env,
-                    stdin: "ignore",
-                    detached: process.platform !== "win32",
-                    forceKillAfter: Duration.seconds(3),
-                  }),
+                  // Agent commands run at the lowest scheduling priority on linux; nice
+                  // and ionice both exec, so the spawned shell keeps this pid and the
+                  // cgroup fence leaf (fc-cmd-<pid>-*) still matches.
+                  process.platform === "linux"
+                    ? ChildProcess.make(
+                        "nice",
+                        ["-n", "19", "ionice", "-c", "2", "-n", "7", invocation.shell, ...args],
+                        {
+                          cwd: invocation.cwd,
+                          env: invocation.env,
+                          stdin: "ignore",
+                          detached: true,
+                          forceKillAfter: Duration.seconds(3),
+                        },
+                      )
+                    : ChildProcess.make(invocation.shell, args, {
+                        cwd: invocation.cwd,
+                        env: invocation.env,
+                        stdin: "ignore",
+                        detached: process.platform !== "win32",
+                        forceKillAfter: Duration.seconds(3),
+                      }),
                 )
                 .pipe(
                   Effect.mapError((cause) => new AppProcess.AppProcessError({ command: invocation.command, cause })),
@@ -455,6 +488,38 @@ const layer = () =>
       return Service.of({ create, list, get, wait, result, timeout, output, remove })
     }),
   )
+
+// Fence-kill annotation and circuit-breaker bookkeeping for a terminated command
+// (fc-opencode guests; inert elsewhere — Cgroup.oomKilled detects the fences).
+// Returns a <shell_metadata> block appended to the captured output, "" when
+// there is nothing to say.
+function fenceOutcome(info: Info) {
+  const sessionID = Schema.is(SessionSchema.ID)(info.metadata?.sessionID)
+    ? info.metadata.sessionID
+    : undefined
+  if (
+    info.status === "exited" &&
+    (info.signal !== undefined || info.exit === 137) &&
+    Cgroup.oomKilled(info.pid ?? 0)
+  ) {
+    const killCount = sessionID ? FenceBreaker.recordKill(sessionID) : 0
+    const tripped = sessionID ? FenceBreaker.refusing(sessionID).refused : false
+    return metadataBlock(FenceBreaker.killMessage(killCount, tripped))
+  }
+  if (info.signal !== undefined)
+    return metadataBlock(
+      `Command was terminated by signal ${info.signal} before completing (an external kill, not this tool's timeout or a user abort).`,
+    )
+  // A clean completion concludes the half-open probe (timeouts and aborts conclude
+  // nothing — an aborted probe must not reset the breaker); exit 137 without fence
+  // evidence is treated as a kill we failed to observe, so it never counts as clean.
+  if (sessionID && info.status === "exited" && info.exit !== 137) FenceBreaker.recordSuccess(sessionID)
+  return ""
+}
+
+function metadataBlock(text: string) {
+  return `\n\n<shell_metadata>\n${text}\n</shell_metadata>`
+}
 
 export const node = makeLocationNode({
   service: Service,
