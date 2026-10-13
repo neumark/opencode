@@ -12,6 +12,9 @@ export const password = Config.Redacted("OPENCODE_PASSWORD").pipe(
   Config.withDefault(undefined),
 )
 
+// The <title> of the served web UI, replacing the app's default when set.
+export const webUiTitle = Config.String("OPENCODE_WEB_UI_TITLE").pipe(Config.withDefault(undefined))
+
 export function session() {
   return Object.fromEntries(
     Object.entries(process.env).filter(

@@ -3,12 +3,14 @@ import { Effect, FileSystem } from "effect"
 import { HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { createHash } from "node:crypto"
 import { load, type AssetMap, type BrotliMap } from "../app-assets"
+import { Env } from "../env"
 
 export const handler = Effect.fn("cli.web-ui.handler")(function* (options?: {
   readonly assets?: AssetMap
   readonly brotli?: BrotliMap
 }) {
   const fileSystem = yield* FileSystem.FileSystem
+  const title = yield* Env.webUiTitle
   const assets = options?.assets
     ? Effect.succeed({ files: options.assets, brotli: options.brotli })
     : yield* Effect.cached(load().pipe(Effect.provideService(FileSystem.FileSystem, fileSystem)))
@@ -26,7 +28,9 @@ export const handler = Effect.fn("cli.web-ui.handler")(function* (options?: {
         return yield* api.pipe(
           Effect.catchIf(isRouteNotFound, () => Effect.succeed(HttpServerResponse.empty({ status: 404 }))),
         )
-      return yield* assets.pipe(Effect.flatMap((loaded) => serveUI(request, url, loaded.files, loaded.brotli)))
+      return yield* assets.pipe(
+        Effect.flatMap((loaded) => serveUI(request, url, loaded.files, loaded.brotli, title)),
+      )
     })
 })
 
@@ -35,6 +39,7 @@ function serveUI(
   url: URL,
   assets: AssetMap,
   brotli: BrotliMap | undefined,
+  title: string | undefined,
 ) {
   const key = url.pathname.replace(/^\//, "")
   // A browser that takes brotli gets the embedded bytes as they are, so the server decompresses nothing. The HTML stays
@@ -48,16 +53,28 @@ function serveUI(
   if (file === undefined) return Effect.succeed(HttpServerResponse.empty({ status: 404 }))
   if (request.method !== "GET" && request.method !== "HEAD")
     return Effect.succeed(HttpServerResponse.empty({ status: 405 }))
-  const html = name === "index.html"
-  const revalidate = html || name === "sw.js" || name === "registerSW.js"
+  if (name === "index.html") {
+    // The HTML stays decoded because its CSP hashes the inline theme script; the title override rewrites it in flight.
+    const html = htmlWithTitle(typeof file === "string" ? file : Buffer.from(file).toString(), title)
+    const headers = {
+      "content-type": FSUtil.mimeType(name),
+      "cache-control": "no-cache",
+      "content-security-policy": cspForHtml(html),
+      "x-content-type-options": "nosniff",
+    }
+    return Effect.succeed(
+      request.method === "HEAD"
+        ? HttpServerResponse.empty({ status: 200, headers })
+        : HttpServerResponse.raw(html, { headers, contentType: headers["content-type"] }),
+    )
+  }
+  const revalidate = name === "sw.js" || name === "registerSW.js"
   const headers = {
     "content-type": FSUtil.mimeType(name),
     "cache-control": revalidate ? "no-cache" : "public, max-age=31536000, immutable",
-    "content-security-policy": html
-      ? cspForHtml(typeof file === "string" ? file : Buffer.from(file).toString())
-      : csp(),
+    "content-security-policy": csp(),
     "x-content-type-options": "nosniff",
-    ...(!html && brotli?.[name] !== undefined ? { vary: "accept-encoding" } : {}),
+    ...(brotli?.[name] !== undefined ? { vary: "accept-encoding" } : {}),
     ...(encoded ? { "content-encoding": "br" } : {}),
   }
   return Effect.succeed(
@@ -65,6 +82,17 @@ function serveUI(
       ? HttpServerResponse.empty({ status: 200, headers })
       : HttpServerResponse.raw(file, { headers, contentType: headers["content-type"] }),
   )
+}
+
+// Replacement uses a function so `$` sequences in the configured title are
+// never treated as replacement patterns.
+export function htmlWithTitle(body: string, title: string | undefined) {
+  const trimmed = title?.trim()
+  if (!trimmed) return body
+  return body.replace(/<title>[\s\S]*?<\/title>/i, () => {
+    const escaped = trimmed.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+    return `<title>${escaped}</title>`
+  })
 }
 
 function acceptsBrotli(header: string | undefined) {
