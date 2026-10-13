@@ -63,16 +63,30 @@ export function make(input: Partial<Interface> = {}): Interface {
 const acquire = (input: Partial<Interface>) =>
   Effect.gen(function* () {
     const service = Service.of(make(input))
+    const tmp = input.tmp ?? (yield* Effect.promise(() => usableTmp(service.tmp)))
+    const acquired = Service.of({ ...service, tmp })
     yield* Effect.promise(() =>
       Promise.all(
-        [service.data, service.config, service.state, service.log, service.bin, service.repos, service.tmp].map(
+        [acquired.data, acquired.config, acquired.state, acquired.log, acquired.bin, acquired.repos, acquired.tmp].map(
           (directory) => fs.promises.mkdir(directory, { recursive: true }),
         ),
       ),
     )
-    const canonicalTmp = yield* Effect.promise(() => fs.promises.realpath(service.tmp))
-    return Service.of({ ...service, tmp: input.tmp ?? canonicalTmp })
+    const canonicalTmp = yield* Effect.promise(() => fs.promises.realpath(acquired.tmp))
+    return Service.of({ ...acquired, tmp: input.tmp ?? canonicalTmp })
   })
+
+// The default tmp root sits in the shared, sticky os.tmpdir(): a file named
+// "opencode" there turns mkdir({recursive}) into EEXIST and a foreign-owned
+// directory makes it unwritable, both fatal at every startup. Fall back to a
+// private directory; explicit tmp roots stay strict.
+function usableTmp(tmp: string) {
+  return fs.promises
+    .mkdir(tmp, { recursive: true })
+    .then(() => fs.promises.access(tmp, fs.constants.W_OK))
+    .then(() => tmp)
+    .catch(() => fs.promises.mkdtemp(path.join(os.tmpdir(), "opencode-")))
+}
 
 const layer = Layer.effect(
   Service,
