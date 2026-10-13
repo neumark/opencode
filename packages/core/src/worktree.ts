@@ -93,7 +93,11 @@ type Transaction = Parameters<Parameters<DatabaseClient["transaction"]>[0]>[0]
 export interface Interface {
   readonly list: (input: { projectID: Project.ID }) => Effect.Effect<List, Project.NotFoundError>
   // The plugin bridge supplies its registry so canonical-project setup can use registrations made so far.
-  readonly create: (input: CreateInput, current?: WorktreeStrategies.Interface) => Effect.Effect<Info, Error>
+  // `strategy` selects a specific strategy (default: the project's selected one).
+  readonly create: (
+    input: CreateInput & { readonly strategy?: StrategyID },
+    current?: WorktreeStrategies.Interface,
+  ) => Effect.Effect<Info, Error>
   readonly remove: (input: RemoveInput, current?: WorktreeStrategies.Interface) => Effect.Effect<void, Error>
   readonly refresh: (
     input: { projectID: Project.ID },
@@ -201,10 +205,10 @@ const layer = Layer.effect(
       return found
     })
 
-    const create = Effect.fn("Worktree.create")(function* (input: CreateInput, current?: WorktreeStrategies.Interface) {
+    const create = Effect.fn("Worktree.create")(function* (input: CreateInput & { strategy?: StrategyID }, current?: WorktreeStrategies.Interface) {
       const row = yield* project(input.projectID)
       const settings = yield* load(row.worktree, current)
-      const selected = yield* getStrategy(settings.selected, settings.strategies)
+      const selected = yield* getStrategy(input.strategy ?? settings.selected, settings.strategies)
       const directory = input.directory ?? settings.directory
       const sourceDirectory = yield* source(input.projectID, input.from ?? row.worktree)
       yield* fs.makeDirectory(directory, { recursive: true }).pipe(Effect.orDie)

@@ -22,6 +22,9 @@ import {
   SkillNotFoundError,
 } from "@opencode/protocol/errors"
 import { AbsolutePath } from "@opencode/core/schema"
+import { Project } from "@opencode/core/project"
+import { Worktree } from "@opencode/core/worktree"
+import { Location } from "@opencode/schema/location"
 import { locationErrors } from "../location"
 import { failedMessageDecode, failedSnapshot, missingMessage, missingSession } from "./session-error"
 
@@ -32,6 +35,8 @@ function missingForm(id: Form.ID) {
 export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handlers) =>
   Effect.gen(function* () {
     const session = yield* Session.Service
+    const projects = yield* Project.Service
+    const worktrees = yield* Worktree.Service
     const transfer = yield* SessionTransfer.Service
     const requireOwnedForm = Effect.fnUntraced(function* (sessionID: Form.Info["sessionID"], formID: Form.ID) {
       const form = yield* Form.Service
@@ -53,6 +58,25 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
         ),
         Effect.as(HttpApiSchema.NoContent.make()),
       )
+
+    // OPENCODE_NEW_SESSION_WORKSPACE=<strategyID> (fork feature): bind every new
+    // top-level session to a FRESH worktree of that strategy — per-tab CoW overlay
+    // isolation over the shared project base. Children (parentID) share the parent's
+    // location natively; an unregistered strategy (plugin absent, fresh boot)
+    // degrades to the payload's location, never an error.
+    const defaultLocation = Effect.fnUntraced(function* (location: Location.PublicRef | undefined) {
+      const directory = location?.directory ?? AbsolutePath.make(process.cwd())
+      const strategy = process.env.OPENCODE_NEW_SESSION_WORKSPACE?.trim()
+      if (!strategy) return location ?? { directory }
+      const project = yield* projects.resolve(directory)
+      const created = yield* worktrees
+        .create({ projectID: project.id, strategy: Worktree.StrategyID.make(strategy) })
+        .pipe(
+          Effect.catchTag("Worktree.StrategyUnavailableError", () => Effect.succeed(undefined)),
+          Effect.orDie,
+        )
+      return created ? { directory: created.directory } : { directory }
+    })
 
     return handlers
       .handle(
@@ -102,7 +126,7 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
                 metadata: ctx.payload.metadata,
                 permissions: ctx.payload.permissions,
                 ...(ctx.payload.parentID === undefined
-                  ? { location: ctx.payload.location ?? { directory: AbsolutePath.make(process.cwd()) } }
+                  ? { location: yield* defaultLocation(ctx.payload.location) }
                   : { parentID: ctx.payload.parentID }),
               })
               .pipe(Effect.catchTag("Session.NotFoundError", missingSession)),
