@@ -2,7 +2,7 @@
 
 This branch (`v2` in `neumark/opencode`) is the **port line for OpenCode 2**. It tracks upstream (`anomalyco/opencode`) `dev` — the live v2 line, where 2.0.x releases are cut as orphan `release:` commits pinned by tags with matching `sync release versions` commits on the branch (same shape as the v1 line). The branch is based at the `v2.0.27` release-sync commit and rebases onto release-sync commits only, never moving dev tips, to keep rebases bounded. The upstream `2.0` branch is a stale April-2026 exploration branch — not the port target. `main` remains the v1 integration branch (currently `v1.19.0-neumark.1`; its `FORK.md` carries the v1 feature specs, release lineage, and the incidents that bought each feature, with `INCIDENT_HISTORY.md` in fc-opencode) until this line proves out in deployment.
 
-**Current state: no fork deltas.** This branch is stock upstream v2.0.27. This document is the port plan — the per-feature disposition of the v1 fork features against the v2 architecture, the fc-opencode contract changes, and the phased rollout.
+**Current state: fork features ported (Phase B, `v2.0.27-neumark.3`)** — features 1, 2, 4, 5a, and 7 are in; 3 and 6 stay dropped by design. Also carried: a tmp-root fallback (`packages/util/src/global.ts`, `v2.0.27-neumark.2`) — the default `$TMPDIR/opencode` root crashed startup with EEXIST whenever a *file* named `opencode` sat in the shared tmp dir (observed live deploying the first v2 build); it now falls back to a private `mkdtemp` directory. Not yet ported: the guest-side overlayfs strategy plugin and the fc-opencode contract changes below (Phase A guest work).
 
 ## Why port (and why not a rebase)
 
@@ -18,37 +18,37 @@ What it costs: v2 currently has **no LSP integration** (v1 fed language-server d
 
 ## Port plan — v1 fork features against v2
 
-### 1. Web UI title override — `OPENCODE_WEB_UI_TITLE` (port, small)
+### 1. Web UI title override — `OPENCODE_WEB_UI_TITLE` (port, small) — **ported**
 
 v1: `packages/opencode/src/server/shared/ui.ts` (`374b444`). v2 target: `packages/cli/src/services/web-ui.ts` — same shape: replace the `<title>` block of the embedded `index.html` (HTML-escape the value; use a function replacement so `$` sequences stay literal) and recompute the inline-theme-script CSP hash — `cspForHtml()` already exists there and hashes the served HTML. Env plumbing follows the v2 Config pattern (`packages/cli/src/env.ts`). Serve path (`opencode serve --hostname`, `OPENCODE_SERVER_PASSWORD`) is unchanged in v2.
 
-### 2. Per-session default workspace binding — `OPENCODE_NEW_SESSION_WORKSPACE` (redesign)
+### 2. Per-session default workspace binding — `OPENCODE_NEW_SESSION_WORKSPACE` (redesign) — **ported**
 
 v2 model: sessions live at `Location.Ref` `{ directory, workspaceID? }`; `session.create` accepts `location` and `parentID` (children keep the parent's location natively — subagent sharing parity for free). Worktrees are first-class: `WorktreeStrategies` (`packages/core/src/worktree/strategies.ts`) holds per-project strategies; `editor.add(strategy)` registers one **and selects it as the default**; the new-session picker (main/create/existing) is client-side, and the `workspaces.defaultDestination` setting is app-local — headless/SDK creates bypass both. Port, two halves:
 
 - The guest plugin registers an `overlayfs` worktree strategy (below).
-- Server-side default binding, same contract as v1 (`60d0229`): a small patch at `session.create` — env `OPENCODE_NEW_SESSION_WORKSPACE=<strategyID>`, top-level creates without an explicit worktree location get a fresh strategy worktree and a rewritten `location.directory`; unregistered strategy degrades to pass-through (never errors); `parentID` creates untouched. `OPENCODE_EXPERIMENTAL_WORKSPACES` is dropped — worktrees are not experimental in v2.
+- Server-side default binding, same contract as v1 (`60d0229`), landed at the `session.create` handler (`packages/server/src/handlers/session.ts`) with strategy selection threaded through `Worktree.create` (`strategy` input, no protocol change): env `OPENCODE_NEW_SESSION_WORKSPACE=<strategyID>`, top-level creates get a fresh strategy worktree and a rewritten `location.directory`; unregistered strategy degrades to pass-through (never errors); `parentID` creates untouched. `OPENCODE_EXPERIMENTAL_WORKSPACES` is dropped — worktrees are not experimental in v2. Integration tests: `packages/server/test/session-create-workspace-default.test.ts`.
 
 ### 3. Workspace origin tracking + home-page integration (drop — obsolete)
 
 v2's location/project model natively lists, labels, groups, and opens worktree sessions under their project; worktree directories are tracked with their strategy (`WorktreeTable`), and the app exposes workspace inventory without project-card hacks. All three v1 gaps (exact-directory filter, unresolvable projects, per-directory store adoption) were v1-app-specific.
 
-### 4. Low-priority agent shell commands (port, trivial)
+### 4. Low-priority agent shell commands (port, trivial) — **ported**
 
-v1: `1059467` in `packages/opencode/src/tool/shell.ts`. v2 target: `packages/core/src/shell.ts`, `Shell.create`'s spawn — wrap with `nice -n 19 ionice -c 2 -n 7` on linux, keeping the pid-preserving exec property the fence annotation (5a) relies on. The `shell.create.before` plugin hook can also mutate the invocation, but a wrapped command string would show in `Info.command`; patch the spawn as in v1.
+v1: `1059467` in `packages/opencode/src/tool/shell.ts`. v2: the spawn in `Shell.create` (`packages/core/src/shell.ts`) wraps with `nice -n 19 ionice -c 2 -n 7` on linux, keeping the pid-preserving exec property the fence annotation (5a) relies on. The `shell.create.before` plugin hook can also mutate the invocation, but a wrapped command string would show in `Info.command`; the spawn is patched as in v1.
 
 ### 5. Firecracker cgroup fence integration (split)
 
-- **5a — OOM-killed command annotation (port).** v2's `finish()` in `packages/core/src/shell.ts` already captures the kill signal (`CrossSpawnSpawner.KilledBySignal`) on the exit path; port `util/cgroup.ts` (`0c929ca`'s `packages/opencode/src/util/cgroup.ts`) into `packages/core/src/util/` essentially unchanged — the guest mechanics (`FC_AGENT_CG` leaf resolution, `fc-cmd-<pid>-*` scan, `oom_kill` in `memory.events`) are opencode-independent — and annotate the `ShellResult` capture as in v1.
+- **5a — OOM-killed command annotation (port, ported).** v2's `finish()` in `packages/core/src/shell.ts` already captures the kill signal (`CrossSpawnSpawner.KilledBySignal`) on the exit path; `util/cgroup.ts` (`0c929ca`) ported to `packages/core/src/util/cgroup.ts` minus `fenceLsp` (see 5b) — the guest mechanics (`FC_AGENT_CG` leaf resolution, `fc-cmd-<pid>-*` scan, `oom_kill` in `memory.events`) are opencode-independent — and the annotation is appended to the `Shell.result` capture (signal deaths without fence evidence are annotated too; exit 137 with evidence gets the fence annotation).
 - **5b — fenced LSP leaves (no target).** v2 has no LSP launch machinery; nothing to fence. Dropped together with the LSP regression noted above. If upstream reintroduces LSP, fence it at the spawn site the same way.
 
 ### 6. Sync-history aggregate-scoped reads (drop — obsolete)
 
 No `/sync/history` exists in v2; the SSE feed plus per-aggregate indexed reads replaces the polling protocol, eliminating the defect class rather than fixing it. Nothing to port; watch incidents, not code.
 
-### 7. Fence-kill circuit breaker (port)
+### 7. Fence-kill circuit breaker (port) — **ported**
 
-v1: `45dfb2b` + `318f171`. `util/fence-breaker.ts` is a pure per-session state machine and ports nearly verbatim; the gate goes in `Shell.create` before spawn (refusal is a normal tool result the model reads; before any permission ask), tripped by 5a's fence-kill detection. `OPENCODE_FENCE_BREAKER` knob semantics unchanged. Port `test/util/fence-breaker.test.ts` alongside.
+v1: `45dfb2b` + `318f171` (hardened). `util/fence-breaker.ts` ported nearly verbatim to `packages/core/src/util/fence-breaker.ts` (kill/refusal message builders added beside the state machine); the gate runs at the top of `Shell.create` before the plugin hooks and the permission ask (a refused command never prompts), tripped by 5a's fence-kill detection in `Shell.result`; the shell tool pre-checks the pure `refusing()` read to return the refusal as a normal tool result before `create`'s gate claims the half-open probe. `OPENCODE_FENCE_BREAKER` knob semantics unchanged. `test/util/fence-breaker.test.ts` ported alongside. Known shared limit (reproven by the Oct 13 vm0 storm): the breaker counts fence *kills* — a page-cache re-fault storm whose trees sit under their memory caps never OOMs and never trips it; the io fences/governor remain the aggregate defense there.
 
 ## The overlayfs plugin (rewrite)
 
@@ -69,8 +69,8 @@ v1: `~/.config/opencode/plugins/overlay-workspace.js` against `experimental_work
 
 ## Phases
 
-1. **Phase A — stock v2 in one slot, no fork features.** Build upstream v2.0.x, run it in one VM behind the existing tailnet serve; guest plumbing only (serve unit env, yolo-config translation, the overlayfs strategy plugin with auto-reclaim and transcript archiving). Validate: long-loop agent sessions at incident-history workloads; overlay semantics (per-tab isolation, subagent sharing via `parentID`); daemon IO/memory profile (`fc-disk`, `/proc/<pid>/io`, per-cgroup `io.stat` — the incident-14 amplification class); serve stability across days.
-2. **Phase B — fork features.** Port 1, 4, and 5a+7 (one cluster, one file), then 2 (server-side default binding). Tests land per v2's per-package `bun test` layout; `fence-breaker.test.ts` and `cgroup.test.ts` port nearly verbatim.
+1. **Phase A — stock v2 in one slot, no fork features.** Build upstream v2.0.x, run it in one VM behind the existing tailnet serve; guest plumbing only (serve unit env, yolo-config translation, the overlayfs strategy plugin with auto-reclaim and transcript archiving). Validate: long-loop agent sessions at incident-history workloads; overlay semantics (per-tab isolation, subagent sharing via `parentID`); daemon IO/memory profile (`fc-disk`, `/proc/<pid>/io`, per-cgroup `io.stat` — the incident-14 amplification class); serve stability across days. *(Status: slot 3 runs stock-plus-tmpdir-fix v2 behind `tailscale serve :4104`; the overlayfs plugin port remains.)*
+2. **Phase B — fork features.** *(Done — `v2.0.27-neumark.3`: 1, 4, 5a+7, then 2. Tests per v2's per-package `bun test` layout; `fence-breaker.test.ts` and `cgroup.test.ts` ported; feature 2 covered by `session-create-workspace-default.test.ts`.)*
 3. **Promote.** When the deployment is satisfied, tag releases off this branch (`v2.0.x-neumark.N`) and point fc-opencode's resolver at them; `main` stays the v1 sunset mirror until the last v1 guest is retired.
 
 ## Open risks
