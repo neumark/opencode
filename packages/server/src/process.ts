@@ -50,8 +50,10 @@ export const start = Effect.fn("ServerProcess.start")(function* <E, R>(
   transform?: Transform,
   remoteURLs?: () => ReadonlyArray<string>,
 ) {
+  // An empty password is the unsecured trusted-network mode (the auth
+  // middleware no-ops for it); missing is still a configuration error.
   const password = options.password
-  if (!password) return yield* Effect.fail(new Error("Missing server password"))
+  if (!password && password !== "") return yield* Effect.fail(new Error("Missing server password"))
   const hostname = options.hostname ?? "127.0.0.1"
   const port = Option.fromNullishOr(options.port)
   const shutdown = yield* Latch.make()
@@ -179,6 +181,9 @@ function dispatch(
   tmp: string,
 ): App {
   const auth = ServerAuth.Config.of({ password: Option.some(password), username: "opencode" })
+  // Unsecured trusted-network mode (explicitly empty password): the dispatch
+  // layer skips credential checks just like the Authorization middleware does.
+  const open = !ServerAuth.required(auth)
   return Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest
     const url = new URL(request.url, "http://localhost")
@@ -186,10 +191,11 @@ function dispatch(
     const app = yield* Ref.get(application)
     const ready = state.type === "ready" && Option.isSome(app)
     if (request.method === "GET" && url.pathname === "/api/info" && !ready) {
-      if (!(yield* authorizedRequest(request, auth))) return unauthorizedResponse(request)
+      if (!open && !(yield* authorizedRequest(request, auth))) return unauthorizedResponse(request)
       return yield* infoResponse(status, version, urls, tmp)
     }
     if (
+      !open &&
       !isPairingConnectURL(url) &&
       (!ready || (!hasPtyConnectTicketURL(url) && !hasPersistentPtyConnectTicketURL(url))) &&
       !(yield* authorizedRequest(request, auth))

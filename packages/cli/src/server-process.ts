@@ -81,6 +81,12 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
       if (options.mode === "service" && process.platform === "win32" && RetainedImage.installed(global.home))
         yield* RetainedImage.retain(global.cache, "service")
       const { start } = yield* Effect.promise(() => import("@opencode/server/process"))
+      // OPENCODE_SERVER_UNSECURED=1 (fork feature, v1 parity): serve with no
+      // authentication on a trusted network — the server layer's auth
+      // middleware and dispatch both no-op for an empty password. Without it,
+      // an explicit OPENCODE_SERVER_PASSWORD wins; unset generates a random
+      // password printed to the journal.
+      const unsecured = ["1", "true", "yes"].includes((process.env.OPENCODE_SERVER_UNSECURED ?? "").toLowerCase())
       const environmentPassword = yield* Env.password
       // Keep the lease credential out of the environment inherited by tools.
       if (options.mode === "stdio") {
@@ -90,10 +96,13 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
       const password =
         options.mode === "service"
           ? config.password || randomBytes(32).toString("base64url")
-          : environmentPassword
-            ? Redacted.value(environmentPassword)
-            : randomBytes(32).toString("base64url")
-      if (!password) return yield* Effect.fail(new Error("Missing server password"))
+          : unsecured
+            ? ""
+            : environmentPassword !== undefined
+              ? Redacted.value(environmentPassword)
+              : randomBytes(32).toString("base64url")
+      // Empty is the unsecured trusted-network mode; only a missing value is an error.
+      if (password === undefined) return yield* Effect.fail(new Error("Missing server password"))
       const instanceID = randomUUID()
       const transform = yield* WebUi.handler()
       const remote = { urls: [] as ReadonlyArray<string> }
@@ -204,7 +213,9 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
       }
       const url = HttpServer.formatAddress(server.address)
       console.log(options.mode === "stdio" ? JSON.stringify({ url }) : `server listening on ${url}`)
-      if (foreground && !environmentPassword) console.log(`server password ${password}`)
+      if (foreground && unsecured)
+        console.log("server is unsecured (OPENCODE_SERVER_UNSECURED — trusted network only)")
+      if (foreground && !environmentPassword && password !== "") console.log(`server password ${password}`)
       return yield* options.mode === "service"
         ? server.shutdown
         : options.mode === "stdio"

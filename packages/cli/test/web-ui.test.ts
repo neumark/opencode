@@ -15,6 +15,27 @@ const root = await mkdtemp(path.join(tmpdir(), "opencode-web-ui-"))
 afterAll(() => rm(root, { recursive: true, force: true }))
 
 describe("web UI", () => {
+  it.live("an explicitly empty password serves everything unauthenticated (trusted-network mode)", () =>
+    Effect.gen(function* () {
+      const transform = yield* WebUi.handler({
+        assets: { "index.html": "<html><body>open</body></html>" },
+      })
+      const server = yield* ServerProcess.start<never, never>(
+        { hostname: "127.0.0.1", port: 0, password: "", database: { path: ":memory:" } },
+        undefined,
+        transform,
+      )
+      const origin = HttpServer.formatAddress(server.address)
+      const response = yield* Effect.promise(() => fetch(new URL("/api/info", origin)))
+      expect(response.status).toBe(200)
+      expect(response.headers.get("www-authenticate")).toBeNull()
+      const page = yield* Effect.promise(() => fetch(new URL("/", origin)))
+      expect(page.status).toBe(200)
+      expect(page.headers.get("www-authenticate")).toBeNull()
+      yield* Effect.promise(() => response.json())
+    }).pipe(Effect.provide(NodeFileSystem.layer)),
+  )
+
   it.live("serves the web shell and assets before server authentication", () =>
     Effect.gen(function* () {
       const transform = yield* WebUi.handler({
