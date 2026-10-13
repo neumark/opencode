@@ -454,7 +454,9 @@ const layer = Layer.effect(
               add: [
                 {
                   name: "@opencode-ai/plugin",
-                  version: InstallationLocal ? undefined : InstallationVersion,
+                  // The fork's -neumark.N versions are never published to npm; pin
+                  // the upstream base version the fork rebased onto (API-identical).
+                  version: InstallationLocal ? undefined : InstallationVersion.replace(/-neumark\.\d+$/, ""),
                 },
               ],
             })
