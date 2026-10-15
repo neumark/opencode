@@ -58,6 +58,10 @@ v1 served on the trusted tailnet with no auth; stock v2 always enforces a passwo
 
 v2's `20260805200742_import_legacy_credentials` migration imports a v1 `~/.local/share/opencode/auth.json`, but only on the upgrade path: a FRESH database takes `DatabaseMigration.apply`'s bootstrap branch, which creates the full schema and records every migration id WITHOUT running any `up()` — so a fresh install over a pre-staged `auth.json` (exactly the fc-opencode guest model: secrets disk stages `auth.json` into every new VM) silently loses all provider credentials. The fork runs `importLegacyCredentials` inside the bootstrap transaction (idempotent — per-integration existence checks — and tolerant of a missing file), so a seeded `auth.json` lands in `credential` on first boot. The stop-side round trip (guest DB credentials exported back to the slot's `auth.json` at VM stop) lives in fc-opencode.
 
+### 10. sd_notify heartbeat for `Type=notify` units (new, v2-only)
+
+`opencode serve` sends `READY=1` once listening and `WATCHDOG=1` every WatchdogSec/2 (from systemd's `WATCHDOG_USEC`), so a unit declared `Type=notify` with `WatchdogSec=` is restarted by systemd itself when the event loop stops servicing (fc-opencode incident 21: daemon green-but-dead — unit active, HTTP unresponsive, PSI under every kill line, nothing to restart it). bun's `node:dgram` has no unix-datagram support, so pings shell out to the `systemd-notify` binary; failed pings are swallowed (telemetry must never take the server down), and the whole path is inert without `NOTIFY_SOCKET` (foreground/dev). Complements the guest's external HTTP watchdog: this one is in-process precision, that one is cause-agnostic and carries the forensics snapshot.
+
 ## The overlayfs plugin (rewrite)
 
 v1: `~/.config/opencode/plugins/overlay-workspace.js` against `experimental_workspace`. v2 rewrite against the promise plugin API (`@opencode/plugin`, `Plugin.define`):

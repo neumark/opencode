@@ -202,6 +202,7 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
       }
       const url = HttpServer.formatAddress(server.address)
       console.log(options.mode === "stdio" ? JSON.stringify({ url }) : `server listening on ${url}`)
+      sdNotifyStart()
       if (foreground && unsecured)
         console.log("server is unsecured (OPENCODE_SERVER_UNSECURED — trusted network only)")
       if (foreground && !environmentPassword && password !== "") console.log(`server password ${password}`)
@@ -241,4 +242,23 @@ function waitForStdinClose() {
       process.stdin.pause()
     })
   })
+}
+
+function sdNotifyStart() {
+  // systemd Type=notify integration (fork feature 10): READY=1 once the
+  // server accepts traffic, then WATCHDOG=1 every WatchdogSec/2 so systemd
+  // itself restarts a wedged event loop (fc-opencode incident 21: the daemon
+  // went green-but-dead — unit active, HTTP unresponsive, every fence
+  // correctly idle; nothing restarts a healthy-looking unit). bun's
+  // node:dgram has no unix-datagram support, so pings go through the
+  // systemd-notify binary; a failed ping must never take the server down.
+  // Entirely inert without NOTIFY_SOCKET (foreground/dev use).
+  if (!process.env.NOTIFY_SOCKET) return
+  const notify = (args: string[]) =>
+    Bun.spawn(["systemd-notify", ...args], { stdout: "ignore", stderr: "ignore" }).exited.catch(() => {})
+  void notify(["--ready"])
+  const usec = Number(process.env.WATCHDOG_USEC ?? 0)
+  if (!(usec > 0)) return
+  const timer = setInterval(() => void notify(["WATCHDOG=1"]), Math.max(usec / 2000, 1000))
+  timer.unref()
 }
