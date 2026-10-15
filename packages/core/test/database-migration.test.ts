@@ -193,6 +193,44 @@ describe("DatabaseMigration", () => {
     )
   })
 
+  test("fresh bootstrap imports a seeded legacy auth.json", async () => {
+    await using tmp = await tmpdir()
+    await Bun.write(
+      path.join(tmp.path, "auth.json"),
+      JSON.stringify({ "fireworks-ai": { type: "api", key: "fw-seeded" } }),
+    )
+
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* DatabaseMigration.apply(db)
+
+        expect(yield* db.all(sql`SELECT integration_id, label, value FROM credential`)).toEqual([
+          {
+            integration_id: "fireworks-ai",
+            label: "API key",
+            value: JSON.stringify({ type: "key", key: "fw-seeded" }),
+          },
+        ])
+      }),
+      Global.make({ data: tmp.path }),
+    )
+  })
+
+  test("fresh bootstrap without auth.json imports no credentials", async () => {
+    await using tmp = await tmpdir()
+
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* DatabaseMigration.apply(db)
+
+        expect(yield* db.get(sql`SELECT count(*) AS count FROM credential`)).toEqual({ count: 0 })
+      }),
+      Global.make({ data: tmp.path }),
+    )
+  })
+
   test("adds nullable attention state to existing sessions", async () => {
     await run(
       Effect.gen(function* () {
@@ -448,13 +486,16 @@ describe("DatabaseMigration", () => {
     await run(
       Effect.gen(function* () {
         const db = yield* makeDb
+        // bootstrap imports the seeded auth.json wholesale (fork: v1 parity)
         yield* DatabaseMigration.apply(db)
         const now = Date.now()
         yield* db.run(sql`
           INSERT INTO credential (id, integration_id, label, value, time_created, time_updated)
-          VALUES ('existing', 'anthropic', 'Existing', ${JSON.stringify({ type: "key", key: "current-key" })}, ${now}, ${now})
+          VALUES ('existing', 'existing-integration', 'Existing', ${JSON.stringify({ type: "key", key: "current-key" })}, ${now}, ${now})
         `)
 
+        // re-running the legacy import changes nothing: per-integration
+        // existence checks skip everything bootstrap already imported
         yield* db.run(sql`DELETE FROM migration WHERE id = ${legacyCredentialsMigration.id}`)
         yield* DatabaseMigration.applyOnly(db, [legacyCredentialsMigration])
         yield* DatabaseMigration.applyOnly(db, [legacyCredentialsMigration])
@@ -463,13 +504,18 @@ describe("DatabaseMigration", () => {
           [
             {
               integration_id: "anthropic",
-              label: "Existing",
-              value: JSON.stringify({ type: "key", key: "current-key" }),
+              label: "API key",
+              value: JSON.stringify({ type: "key", key: "legacy-key", metadata: { region: "us" } }),
             },
             {
               integration_id: "custom-provider",
               label: "API key",
               value: JSON.stringify({ type: "key", key: "custom-key" }),
+            },
+            {
+              integration_id: "existing-integration",
+              label: "Existing",
+              value: JSON.stringify({ type: "key", key: "current-key" }),
             },
             {
               integration_id: "github-copilot",
