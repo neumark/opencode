@@ -1,12 +1,14 @@
 export * as DatabaseMigration from "./migration.js"
 
 import { sql } from "drizzle-orm"
+import path from "node:path"
 import { Effect } from "effect"
 import { supportsForeignKeyToggle } from "#sqlite"
 import type { EffectDrizzleSqlite } from "./drizzle.js"
 import { migrations } from "./migration.gen.js"
 import schema from "./schema.gen.js"
 import { Global } from "@opencode/util/global"
+import { importLegacyCredentials } from "./migration/20260805200742_import_legacy_credentials.js"
 
 type Database = EffectDrizzleSqlite.EffectSQLiteDatabase
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0]
@@ -19,7 +21,7 @@ export type Migration = {
 
 // Not serialized here: the Database layer holds a lock scoped to the database
 // it is bootstrapping, since two instances over one file must not race.
-export function apply(db: Database) {
+export function apply(db: Database): Effect.Effect<void, unknown, Global.Service> {
   return Effect.gen(function* () {
     // OpenCode owns the unprefixed table namespace. Embedders sharing this
     // database may own underscore-prefixed tables, which bootstrap ignores.
@@ -42,6 +44,15 @@ export function apply(db: Database) {
             sql`INSERT INTO ${sql.identifier("migration")} (id, time_completed) VALUES (${migration.id}, ${Date.now()})`,
           ),
         )
+        // (fork, v1 parity) fresh installs must still import a seeded legacy
+        // auth.json: bootstrap records every migration id without running its
+        // up(), so the v1->v2 credential import never executes on a fresh
+        // database — deployments that stage auth.json into a new machine
+        // (fc-opencode guests) silently lose every provider credential. Run
+        // the same import the upgrade path would have run; it is idempotent
+        // (per-integration existence check) and tolerates a missing file.
+        const global = yield* Global.Service
+        yield* importLegacyCredentials(tx, path.join(global.data, "auth.json"))
       }),
     )
     yield* Effect.logInfo("database schema bootstrap completed", {

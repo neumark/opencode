@@ -54,6 +54,10 @@ v1: `45dfb2b` + `318f171` (hardened). `util/fence-breaker.ts` ported nearly verb
 
 v1 served on the trusted tailnet with no auth; stock v2 always enforces a password (random when unset — rotating per boot, pairing screen per browser). The server layer already supports an open mode (`ServerAuth.required` is false for an empty password) but nothing could reach it: the CLI always generated one, and the pre-API `dispatch` layer enforced credentials independently of `required()`. `OPENCODE_SERVER_UNSECURED=1` (cli `server-process.ts`, read directly like the fork's other knobs — Effect Config treats an empty env value as unset, so the empty-`OPENCODE_SERVER_PASSWORD` spelling can't work) serves with an empty password; `ServerProcess.start`'s guard and `dispatch` now let the empty password through, and the middleware no-ops. Guests set it in the serve unit; `fc-sessions`/`fc-transcript-archive` detect the open mode (and verify journal passwords before trusting them — stale lines linger across mode switches).
 
+### 9. Legacy auth.json import on fresh-database bootstrap (fix, v2-only)
+
+v2's `20260805200742_import_legacy_credentials` migration imports a v1 `~/.local/share/opencode/auth.json`, but only on the upgrade path: a FRESH database takes `DatabaseMigration.apply`'s bootstrap branch, which creates the full schema and records every migration id WITHOUT running any `up()` — so a fresh install over a pre-staged `auth.json` (exactly the fc-opencode guest model: secrets disk stages `auth.json` into every new VM) silently loses all provider credentials. The fork runs `importLegacyCredentials` inside the bootstrap transaction (idempotent — per-integration existence checks — and tolerant of a missing file), so a seeded `auth.json` lands in `credential` on first boot. The stop-side round trip (guest DB credentials exported back to the slot's `auth.json` at VM stop) lives in fc-opencode.
+
 ## The overlayfs plugin (rewrite)
 
 v1: `~/.config/opencode/plugins/overlay-workspace.js` against `experimental_workspace`. v2 rewrite against the promise plugin API (`@opencode/plugin`, `Plugin.define`):
@@ -70,7 +74,7 @@ v1: `~/.config/opencode/plugins/overlay-workspace.js` against `experimental_work
 - `fc-transcript-archive`: continuous capture until v2 grows an archive API — the plugin exports after every run reaches a terminal state and an hourly timer sweeps `--all` (same design as the deployment's claude-code hook in `docs/.claude/hooks/archive-transcript.sh`); deletion costs at most the in-flight run. Replaced by an archive-API hook when upstream ships one.
 - `fc-sessions` / `fc-transcript-archive`: dual-version (v1 unauthenticated `/session`, v2 `/api/session` under basic auth with the password pulled from the guest's serve journal); v2 links are `/server/<base64url(origin)>/session/<id>`.
 - Release resolver: unchanged — verified against `v2.0.27-neumark.3` (asset name `opencode-linux-x64.tar.gz`, `find`-based install, serve smoke test all match).
-- Secrets channel: v2 imports legacy `~/.local/share/opencode/auth.json` credentials at migration — keep shipping `auth.json` through `secrets/vm$SLOT`.
+- Secrets channel: v2 imports legacy `~/.local/share/opencode/auth.json` credentials — on the upgrade path at migration, and (fork feature 9) on fresh-database bootstrap. Keep shipping `auth.json` through `secrets/vm$SLOT`; fc-opencode's stop path exports guest DB credentials back into it.
 
 ## Phases
 
