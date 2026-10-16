@@ -62,6 +62,10 @@ v2's `20260805200742_import_legacy_credentials` migration imports a v1 `~/.local
 
 `opencode serve` sends `READY=1` once listening and `WATCHDOG=1` every WatchdogSec/2 (from systemd's `WATCHDOG_USEC`), so a unit declared `Type=notify` with `WatchdogSec=` is restarted by systemd itself when the event loop stops servicing (fc-opencode incident 21: daemon green-but-dead — unit active, HTTP unresponsive, PSI under every kill line, nothing to restart it). bun's `node:dgram` has no unix-datagram support, so pings shell out to the `systemd-notify` binary; failed pings are swallowed (telemetry must never take the server down), and the whole path is inert without `NOTIFY_SOCKET` (foreground/dev). Complements the guest's external HTTP watchdog: this one is in-process precision, that one is cause-agnostic and carries the forensics snapshot.
 
+### 11. Deployment-contract tests (new, v2-only)
+
+The fleet's tooling consumes opencode's CLI surface and export JSON across repo boundaries — docs/scripts/session-usage.mjs builds the token-usage ledger from `opencode session export <id>` / `opencode session list --format json`. The v1→v2 port silently moved the export command (top-level `export` → `session export`) and restructured the payload (`info.role`→`type`, `info.tokens`→`tokens`, `parts`→`content`), taking the ledger offline with only "no API calls in the window" as a symptom (fc-opencode incident 24). `packages/core/test/session-export-contract.test.ts` pins the export payload fields the parser reads (per-message `type`/`tokens`/`model{id,providerID}`/`time`/`content`, session-level `info.tokens` aggregate); the CLI surface itself is verified in the fleet. **Rule: when these tests fail on a rebase, the upstream restructure MUST be mirrored into docs/scripts/lib/sessionUsage.mjs in the same change — the test failure is the tooling break arriving early.**
+
 ## The overlayfs plugin (rewrite)
 
 v1: `~/.config/opencode/plugins/overlay-workspace.js` against `experimental_workspace`. v2 rewrite against the promise plugin API (`@opencode/plugin`, `Plugin.define`):
