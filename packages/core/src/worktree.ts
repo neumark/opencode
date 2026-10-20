@@ -314,6 +314,13 @@ const layer = Layer.effect(
               strategy: entry.type === "worktree" ? strategy.id : undefined,
             })
           }
+          // The first strategy that claims the root wins: a location-scoped
+          // plugin strategy (added after the default git one, so iterated
+          // first) answers for directories a checkout can never describe —
+          // running the default strategy over them anyway only logs
+          // "worktree discovery failed ... strategy=git" for every refresh
+          // (fc-opencode incident 25: a mounted overlayfs workspace).
+          if (entries.length > 0) break
         }
       }
       const removed = checked.filter((item) => !item.exists).map((item) => item.directory)

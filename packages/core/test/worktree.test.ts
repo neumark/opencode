@@ -173,6 +173,50 @@ describe("Worktree", () => {
     }),
   )
 
+  it.live("a claiming plugin strategy short-circuits the default strategy for that root", () =>
+    Effect.gen(function* () {
+      const input = yield* setup()
+      const service = yield* Worktree.Service
+      const git = yield* WorktreeGit.make
+      const claimed = abs(yield* Effect.promise(() => fs.realpath(input.root.path)))
+      // a root that is NOT a git checkout: the default strategy fails on it
+      // exactly like an overlay directory does
+      yield* Effect.promise(() => fs.rm(path.join(input.root.path, ".git"), { recursive: true, force: true }))
+      let defaultCalls = 0
+      const countingGit = { ...git, list: (directory: AbsolutePath) => { defaultCalls++; return git.list(directory) } }
+      const claiming: WorktreeStrategies.Strategy = {
+        id: Worktree.StrategyID.make("claims-root"),
+        create: () => Effect.die("create"),
+        remove: () => Effect.void,
+        list: () => Effect.succeed([{ directory: claimed, type: "worktree" as const }]),
+      }
+      const strategies = (map: ReadonlyMap<Worktree.StrategyID, WorktreeStrategies.Strategy>) =>
+        ({
+          directory: claimed,
+          transform: () => Effect.void,
+          reload: Effect.void,
+          get: () => ({ directory: claimed, strategies: map, selected: git.id }),
+        }) as unknown as WorktreeStrategies.Interface
+      // Control: the default strategy alone runs (and fails) for the root.
+      yield* service.refresh({ projectID: input.projectID }, strategies(new Map([[git.id, countingGit]])))
+      expect(defaultCalls).toBeGreaterThan(0)
+      // Claimed root: the default strategy must not be consulted at all.
+      defaultCalls = 0
+      yield* service.refresh(
+        { projectID: input.projectID },
+        strategies(new Map([[git.id, countingGit], [claiming.id, claiming]])),
+      )
+      expect(defaultCalls).toBe(0)
+      const rows = yield* input.db
+        .select({ directory: WorktreeTable.directory, strategy: WorktreeTable.strategy })
+        .from(WorktreeTable)
+        .where(eq(WorktreeTable.project_id, input.projectID))
+        .all()
+        .pipe(Effect.orDie)
+      expect(rows).toContainEqual({ directory: claimed, strategy: "claims-root" })
+    }),
+  )
+
   it.live("reports unavailable recorded strategy ids", () =>
     Effect.gen(function* () {
       const input = yield* setup()
