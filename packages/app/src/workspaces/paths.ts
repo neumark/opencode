@@ -37,6 +37,10 @@ export function filterWorkspaceInventory<T extends { project: { id: string } }>(
 export function sessionsForWorkspace(sessions: readonly SessionInfo[], workspace: string) {
   return sessions
     .filter((session) => session.time.archived === undefined)
+    // Subagent children live in the same directory as their parent; they are
+    // driven to completion from the parent's timeline, never opened directly,
+    // so listing them here only buries the human-started sessions.
+    .filter((session) => !session.parentID)
     .filter((session) => containsDirectory(workspace, session.location.directory))
     .toSorted((a, b) => b.time.updated - a.time.updated)
 }

@@ -160,15 +160,16 @@ test("reports every workspace deletion condition", () => {
   ).toEqual({ active: false, linked: false, dirty: false })
 })
 
-test("groups nested non-archived workspace sessions by latest activity", () => {
-  const session = (id: string, directory: string, updated: number, archived?: number) =>
-    ({ id, location: { directory }, time: { created: 1, updated, archived } }) as SessionInfo
+test("groups nested non-archived non-subagent workspace sessions by latest activity", () => {
+  const session = (id: string, directory: string, updated: number, archived?: number, parentID?: string) =>
+    ({ id, location: { directory }, time: { created: 1, updated, archived }, parentID }) as SessionInfo
 
   const sessions = sessionsForWorkspace(
     [
       session("old", "/workspace", 2),
       session("nested", "/workspace/packages/app", 3),
       session("archived", "/workspace", 4, 5),
+      session("subagent", "/workspace", 7, undefined, "nested"),
       session("other", "/other", 6),
     ],
     "/workspace",
