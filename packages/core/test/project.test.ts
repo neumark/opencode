@@ -171,6 +171,51 @@ describe("Project archiving", () => {
     }),
   )
 
+  it.effect("archives and unarchives through project.update", () =>
+    Effect.gen(function* () {
+      const db = (yield* Database.Service).db
+      const project = yield* Project.Service
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.make("manual"), worktree: abs("/manual"), sandboxes: [], time_active: 2 })
+        .run()
+
+      const archived = yield* project.update({ projectID: Project.ID.make("manual"), archived: true })
+      expect(archived.time.archived).toBeNumber()
+      expect((yield* project.list()).map((item) => item.id)).toEqual([])
+
+      const restored = yield* project.update({ projectID: Project.ID.make("manual"), archived: false })
+      expect(restored.time.archived).toBeUndefined()
+      expect((yield* project.list()).map((item) => item.id)).toEqual([Project.ID.make("manual")])
+    }),
+  )
+
+  it.live("archives same-canonical residue beside the live row", () =>
+    Effect.gen(function* () {
+      const tmp = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir()),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      )
+      const directory = path.join(tmp.path, "repo")
+      yield* Effect.promise(() => fs.mkdir(directory))
+      const db = (yield* Database.Service).db
+      const project = yield* Project.Service
+      yield* db
+        .insert(ProjectTable)
+        .values([
+          { id: Project.ID.make("stale"), worktree: abs(directory), sandboxes: [], time_active: 1, time_updated: 1 },
+          { id: Project.ID.make("live"), worktree: abs(directory), sandboxes: [], time_active: 2, time_updated: 1 },
+        ])
+        .run()
+
+      yield* project.sweep()
+
+      expect((yield* project.list()).map((item) => item.id)).toEqual([Project.ID.make("live")])
+      const stale = (yield* project.list({ archived: true })).find((item) => item.id === Project.ID.make("stale"))
+      expect(stale?.time.archived).toBeNumber()
+    }),
+  )
+
   it.live("archives projects whose directories are gone and unarchives them on resolve", () =>
     Effect.gen(function* () {
       const tmp = yield* Effect.acquireRelease(

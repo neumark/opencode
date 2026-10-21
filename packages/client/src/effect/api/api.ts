@@ -1707,6 +1707,7 @@ export type ProjectUpdateInput = {
   readonly name?: string | undefined
   readonly icon?: Project.Icon | undefined
   readonly commands?: Project.Commands | undefined
+  readonly archived?: boolean | undefined
 }
 export type ProjectUpdateOutput = Project.Info
 export type ProjectUpdateOperation<E = never> = (input: ProjectUpdateInput) => Effect.Effect<ProjectUpdateOutput, E>

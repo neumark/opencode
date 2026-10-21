@@ -5351,25 +5351,36 @@ export type ProjectUpdateInput = {
     readonly name?: string
     readonly icon?: { readonly url?: string; readonly override?: string; readonly color?: string }
     readonly commands?: { readonly start?: string }
+    readonly archived?: boolean
   }["canonical"]
   readonly name?: {
     readonly canonical?: string
     readonly name?: string
     readonly icon?: { readonly url?: string; readonly override?: string; readonly color?: string }
     readonly commands?: { readonly start?: string }
+    readonly archived?: boolean
   }["name"]
   readonly icon?: {
     readonly canonical?: string
     readonly name?: string
     readonly icon?: { readonly url?: string; readonly override?: string; readonly color?: string }
     readonly commands?: { readonly start?: string }
+    readonly archived?: boolean
   }["icon"]
   readonly commands?: {
     readonly canonical?: string
     readonly name?: string
     readonly icon?: { readonly url?: string; readonly override?: string; readonly color?: string }
     readonly commands?: { readonly start?: string }
+    readonly archived?: boolean
   }["commands"]
+  readonly archived?: {
+    readonly canonical?: string
+    readonly name?: string
+    readonly icon?: { readonly url?: string; readonly override?: string; readonly color?: string }
+    readonly commands?: { readonly start?: string }
+    readonly archived?: boolean
+  }["archived"]
 }
 
 export type ProjectUpdateOutput = Project

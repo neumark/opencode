@@ -243,6 +243,8 @@ const layer = Layer.effect(
               : input.commands.start
                 ? { start: input.commands.start }
                 : null,
+          time_archived:
+            input.archived === undefined ? undefined : input.archived ? Date.now() : null,
           time_updated: Date.now(),
         })
         .where(eq(ProjectTable.id, input.projectID))
@@ -406,7 +408,7 @@ const layer = Layer.effect(
         lt(ProjectTable.time_active, cutoff),
       )
       const projects = yield* db
-        .select({ id: ProjectTable.id, canonical: ProjectTable.worktree })
+        .select({ id: ProjectTable.id, canonical: ProjectTable.worktree, active: ProjectTable.time_active })
         .from(ProjectTable)
         .where(and(idle, ne(ProjectTable.id, ID.global)))
         .all()
@@ -432,6 +434,32 @@ const layer = Layer.effect(
                 ? { worktree: main.directory }
                 : { time_archived: Date.now(), time_updated: sql`${ProjectTable.time_updated}` },
             )
+            .where(and(eq(ProjectTable.id, project.id), idle))
+            .returning()
+            .get()
+            .pipe(Effect.orDie)
+          if (row) yield* bus.publish(ProjectSchema.Event.Updated, fromRow(row))
+        }),
+        { concurrency: 8, discard: true },
+      )
+      // Same-canonical residue: rows that outlived an id change (the fallback id
+      // from before a remote or root commit was known, markerless adoption rows)
+      // linger beside the live row forever — directory existence can never
+      // archive them because the shared canonical still exists. Archive an idle
+      // row when another row claims the same canonical directory with newer
+      // activity; sessions keep their attribution through the archived row.
+      const rows = yield* db
+        .select({ id: ProjectTable.id, canonical: ProjectTable.worktree, active: ProjectTable.time_active })
+        .from(ProjectTable)
+        .all()
+        .pipe(Effect.orDie)
+      yield* Effect.forEach(
+        projects,
+        Effect.fnUntraced(function* (project) {
+          if (!rows.some((row) => row.id !== project.id && row.canonical === project.canonical && row.active > project.active)) return
+          const row = yield* db
+            .update(ProjectTable)
+            .set({ time_archived: Date.now(), time_updated: sql`${ProjectTable.time_updated}` })
             .where(and(eq(ProjectTable.id, project.id), idle))
             .returning()
             .get()

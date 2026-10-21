@@ -1520,6 +1520,7 @@ export function make(options: ClientOptions) {
               name: input["name"],
               icon: input["icon"],
               commands: input["commands"],
+              archived: input["archived"],
             },
             successStatus: 200,
             declaredStatuses: [400, 401, 404],

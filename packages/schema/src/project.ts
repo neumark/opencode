@@ -55,6 +55,8 @@ export const UpdateInput = Schema.Struct({
   name: optional(Schema.String),
   icon: optional(Icon),
   commands: optional(Commands),
+  /** Archives the Project (archived Projects are excluded from lists until unarchived). */
+  archived: optional(Schema.Boolean),
 }).annotate({ identifier: "Project.UpdateInput" })
 export interface UpdateInput extends Schema.Schema.Type<typeof UpdateInput> {}
 
